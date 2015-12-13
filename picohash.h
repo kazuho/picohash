@@ -87,10 +87,11 @@
 #ifndef _picohash_h_
 #define _picohash_h_
 
+#include <assert.h>
 #include <inttypes.h>
 #include <string.h>
 
-#define PICOHASH_MD5_HASH_SIZE 16
+#define PICOHASH_MD5_DIGEST_LENGTH 16
 
 typedef struct {
     uint32_t state[4];
@@ -98,24 +99,42 @@ typedef struct {
     unsigned char buffer[64];
 } picohash_md5_ctx_t;
 
-static void picohash_md5_init(picohash_md5_ctx_t *context);
-static void picohash_md5_update(picohash_md5_ctx_t *context, const void *input, size_t len);
-static void picohash_md5_final(picohash_md5_ctx_t *context, unsigned char *digest);
+static void picohash_md5_init(picohash_md5_ctx_t *ctx);
+static void picohash_md5_update(picohash_md5_ctx_t *ctx, const void *input, size_t len);
+static void picohash_md5_final(picohash_md5_ctx_t *ctx, unsigned char *digest);
 
-#define PICOHASH_SHA1_HASH_SIZE 20
+#define PICOHASH_SHA1_DIGEST_LENGTH 20
 
 typedef struct {
-    uint32_t Intermediate_Hash[PICOHASH_SHA1_HASH_SIZE / 4];
+    uint32_t Intermediate_Hash[PICOHASH_SHA1_DIGEST_LENGTH / 4];
     uint32_t Length_Low;
     uint32_t Length_High;
     int_least16_t Message_Block_Index;
     uint8_t Message_Block[64];
 } picohash_sha1_ctx_t;
 
-static void picohash_sha1_init(picohash_sha1_ctx_t *context);
-static void picohash_sha1_update(picohash_sha1_ctx_t *context, const void *input, size_t len);
-static void picohash_sha1_final(picohash_sha1_ctx_t *context, unsigned char *digest);
+static void picohash_sha1_init(picohash_sha1_ctx_t *ctx);
+static void picohash_sha1_update(picohash_sha1_ctx_t *ctx, const void *input, size_t len);
+static void picohash_sha1_final(picohash_sha1_ctx_t *ctx, unsigned char *digest);
 
+enum {
+    PICOHASH_MD5,
+    PICOHASH_SHA1
+};
+
+typedef struct {
+    union {
+        picohash_md5_ctx_t md5;
+        picohash_sha1_ctx_t sha1;
+    };
+    size_t digest_length;
+    void (*update)(void *ctx, const void *input, size_t len);
+    void (*final)(void *ctx, unsigned char *digest);
+} picohash_hash_ctx_t;
+
+static void picohash_hash_init(picohash_hash_ctx_t *ctx, int algo);
+static void picohash_hash_update(picohash_hash_ctx_t *ctx, const void *input, size_t len);
+static void picohash_hash_final(picohash_hash_ctx_t *ctx, unsigned char *digest);
 
 /* following are private definitions */
 
@@ -557,8 +576,39 @@ void picohash_sha1_final(picohash_sha1_ctx_t *context, uint8_t *Message_Digest)
 
     picohash_sha1__finalize(context, 0x80);
 
-    for (i = 0; i < PICOHASH_SHA1_HASH_SIZE; ++i)
+    for (i = 0; i < PICOHASH_SHA1_DIGEST_LENGTH; ++i)
         Message_Digest[i] = (uint8_t)(context->Intermediate_Hash[i >> 2] >> (8 * (3 - (i & 0x03))));
+}
+
+void picohash_hash_init(picohash_hash_ctx_t *ctx, int algo)
+{
+    switch (algo) {
+    case PICOHASH_MD5:
+        picohash_md5_init(&ctx->md5);
+        ctx->digest_length = PICOHASH_MD5_DIGEST_LENGTH;
+        ctx->update = (void *)picohash_md5_update;
+        ctx->final = (void *)picohash_md5_final;
+        break;
+    case PICOHASH_SHA1:
+        picohash_sha1_init(&ctx->sha1);
+        ctx->digest_length = PICOHASH_SHA1_DIGEST_LENGTH;
+        ctx->update = (void *)picohash_sha1_update;
+        ctx->final = (void *)picohash_sha1_final;
+        break;
+    default:
+        assert(!"invalid algo");
+        break;
+    }
+}
+
+void picohash_hash_update(picohash_hash_ctx_t *ctx, const void *input, size_t len)
+{
+    ctx->update(ctx, input, len);
+}
+
+static void picohash_hash_final(picohash_hash_ctx_t *ctx, unsigned char *digest)
+{
+    ctx->final(ctx, digest);
 }
 
 #endif
