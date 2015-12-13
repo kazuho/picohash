@@ -124,20 +124,28 @@ enum {
     PICOHASH_SHA1
 };
 
+#define PICOHASH_MAX_BLOCK_LENGTH 64
+#define PICOHASH_MAX_DIGEST_LENGTH 20
+
 typedef struct {
     union {
         picohash_md5_ctx_t md5;
         picohash_sha1_ctx_t sha1;
     };
+    int algo;
     size_t block_length;
     size_t digest_length;
     void (*update)(void *ctx, const void *input, size_t len);
     void (*final)(void *ctx, unsigned char *digest);
-} picohash_hash_ctx_t;
+    struct {
+        unsigned char k_opad[PICOHASH_MAX_BLOCK_LENGTH];
+        void (*hash_final)(void *ctx, unsigned char *digest);
+    } _hmac;
+} picohash_ctx_t;
 
-static void picohash_hash_init(picohash_hash_ctx_t *ctx, int algo);
-static void picohash_hash_update(picohash_hash_ctx_t *ctx, const void *input, size_t len);
-static void picohash_hash_final(picohash_hash_ctx_t *ctx, unsigned char *digest);
+static void picohash_init(picohash_ctx_t *ctx, int algo);
+static void picohash_update(picohash_ctx_t *ctx, const void *input, size_t len);
+static void picohash_final(picohash_ctx_t *ctx, unsigned char *digest);
 
 /* following are private definitions */
 
@@ -583,11 +591,12 @@ inline void picohash_sha1_final(picohash_sha1_ctx_t *context, uint8_t *Message_D
         Message_Digest[i] = (uint8_t)(context->Intermediate_Hash[i >> 2] >> (8 * (3 - (i & 0x03))));
 }
 
-inline void picohash_hash_init(picohash_hash_ctx_t *ctx, int algo)
+inline void picohash_init(picohash_ctx_t *ctx, int algo)
 {
     switch (algo) {
     case PICOHASH_MD5:
         picohash_md5_init(&ctx->md5);
+        ctx->algo = algo;
         ctx->block_length = PICOHASH_MD5_BLOCK_LENGTH;
         ctx->digest_length = PICOHASH_MD5_DIGEST_LENGTH;
         ctx->update = (void *)picohash_md5_update;
@@ -595,6 +604,7 @@ inline void picohash_hash_init(picohash_hash_ctx_t *ctx, int algo)
         break;
     case PICOHASH_SHA1:
         picohash_sha1_init(&ctx->sha1);
+        ctx->algo = algo;
         ctx->block_length = PICOHASH_SHA1_BLOCK_LENGTH;
         ctx->digest_length = PICOHASH_SHA1_DIGEST_LENGTH;
         ctx->update = (void *)picohash_sha1_update;
@@ -606,14 +616,65 @@ inline void picohash_hash_init(picohash_hash_ctx_t *ctx, int algo)
     }
 }
 
-inline void picohash_hash_update(picohash_hash_ctx_t *ctx, const void *input, size_t len)
+inline void picohash_update(picohash_ctx_t *ctx, const void *input, size_t len)
 {
     ctx->update(ctx, input, len);
 }
 
-inline void picohash_hash_final(picohash_hash_ctx_t *ctx, unsigned char *digest)
+inline void picohash_final(picohash_ctx_t *ctx, unsigned char *digest)
 {
     ctx->final(ctx, digest);
+}
+
+inline void picohash_hmac_final(picohash_ctx_t *ctx, unsigned char *digest)
+{
+    unsigned char inner_digest[PICOHASH_MAX_DIGEST_LENGTH];
+
+    ctx->_hmac.hash_final(ctx, inner_digest);
+
+    picohash_init(ctx, ctx->algo);
+    picohash_update(ctx, ctx->_hmac.k_opad, ctx->block_length);
+    picohash_update(ctx, inner_digest, ctx->digest_length);
+    memset(inner_digest, 0, ctx->digest_length);
+
+    picohash_final(ctx, digest);
+}
+
+inline void picohash_hmac_init(picohash_ctx_t *ctx, int algo, const void *key, size_t key_len)
+{
+    unsigned char keybuf[PICOHASH_MAX_BLOCK_LENGTH], k_ipad[PICOHASH_MAX_BLOCK_LENGTH];
+    size_t i;
+
+    picohash_init(ctx, algo);
+
+    if (key_len > ctx->block_length) {
+        /* replace key with the digest of the key, if it is long */
+        picohash_update(ctx, key, key_len);
+        picohash_final(ctx, keybuf);
+        key = keybuf;
+        key_len = ctx->digest_length;
+        picohash_init(ctx, algo);
+    }
+
+    /* calculate ipad and opad */
+    memset(k_ipad, 0, ctx->block_length);
+    memcpy(k_ipad, key, key_len);
+    memset(ctx->_hmac.k_opad, 0, ctx->block_length);
+    memcpy(ctx->_hmac.k_opad, key, key_len);
+    for (i = 0; i != ctx->block_length; ++i) {
+        k_ipad[i] ^= 0x36;
+        ctx->_hmac.k_opad[i] ^= 0x5c;
+    }
+
+    /* replace final function */
+    ctx->_hmac.hash_final = ctx->final;
+    ctx->final = (void *)picohash_hmac_final;
+
+    /* start calculating the inner hash */
+    picohash_update(ctx, k_ipad, ctx->block_length);
+
+    /* reset ipad */
+    memset(k_ipad, 0, ctx->block_length);
 }
 
 #endif
