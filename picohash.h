@@ -566,6 +566,8 @@ inline void picohash_sha1_update(picohash_sha1_ctx_t *context, const void *_mess
         addTemp = context->Length_Low;
         if ((context->Length_Low += 8) < addTemp)
             ++context->Length_High;
+        if (context->Message_Block_Index == PICOHASH_SHA1_BLOCK_LENGTH)
+            picohash_sha1__process_message_block(context);
 
         message_array++;
     }
