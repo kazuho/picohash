@@ -141,7 +141,7 @@ static void picohash_hash_final(picohash_hash_ctx_t *ctx, unsigned char *digest)
 /* Encodes input (uint32_t) into output (unsigned char). Assumes len is
   a multiple of 4.
  */
-static void picohash_md5__encode(unsigned char *output, const uint32_t *input, unsigned int len)
+static inline void picohash_md5__encode(unsigned char *output, const uint32_t *input, unsigned int len)
 {
     unsigned int i, j;
 
@@ -156,7 +156,7 @@ static void picohash_md5__encode(unsigned char *output, const uint32_t *input, u
 /* Decodes input (unsigned char) into output (uint32_t). Assumes len is
   a multiple of 4.
  */
-static void picohash_md5__decode(uint32_t *output, const unsigned char *input, unsigned int len)
+static inline void picohash_md5__decode(uint32_t *output, const unsigned char *input, unsigned int len)
 {
     unsigned int i, j;
 
@@ -167,7 +167,7 @@ static void picohash_md5__decode(uint32_t *output, const unsigned char *input, u
 
 /* MD5 basic transformation. Transforms state based on block.
  */
-static void picohash_md5__transform(uint32_t state[4], const unsigned char block[64])
+static inline void picohash_md5__transform(uint32_t state[4], const unsigned char block[64])
 {
 #define PICOHASH__S11 7
 #define PICOHASH__S12 12
@@ -338,7 +338,7 @@ Rotation is separate from addition to prevent recomputation.
 
 /* MD5 initialization. Begins an MD5 operation, writing a new context.
  */
-void picohash_md5_init(picohash_md5_ctx_t *context)
+inline void picohash_md5_init(picohash_md5_ctx_t *context)
 {
     context->count[0] = context->count[1] = 0;
     /* Load magic initialization constants. */
@@ -352,7 +352,7 @@ void picohash_md5_init(picohash_md5_ctx_t *context)
   operation, processing another message block, and updating the
   context.
  */
-void picohash_md5_update(picohash_md5_ctx_t *context, const void *_input, size_t inputLen)
+inline void picohash_md5_update(picohash_md5_ctx_t *context, const void *_input, size_t inputLen)
 {
     const unsigned char *input = _input;
     size_t i, index, partLen;
@@ -386,7 +386,7 @@ void picohash_md5_update(picohash_md5_ctx_t *context, const void *_input, size_t
 /* MD5 finalization. Ends an MD5 message-digest operation, writing the
   the message digest and zeroizing the context.
  */
-void picohash_md5_final(picohash_md5_ctx_t *context, unsigned char *digest)
+inline void picohash_md5_final(picohash_md5_ctx_t *context, unsigned char *digest)
 {
     static const unsigned char PADDING[64] = {0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                                               0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -414,7 +414,7 @@ void picohash_md5_final(picohash_md5_ctx_t *context, unsigned char *digest)
 
 #define PICOHASH_SHA1__MESSAGE_BLOCK_SIZE 64
 
-static void picohash_sha1__process_message_block(picohash_sha1_ctx_t *context)
+static inline void picohash_sha1__process_message_block(picohash_sha1_ctx_t *context)
 {
 #define PICOHASH_SHA1__Ch(x, y, z) (((x) & ((y) ^ (z))) ^ (z))
 #define PICOHASH_SHA1__Maj(x, y, z) (((x) & ((y) | (z))) | ((y) & (z)))
@@ -496,7 +496,7 @@ static void picohash_sha1__process_message_block(picohash_sha1_ctx_t *context)
 #undef PICOHASH_SHA1__ROTL
 }
 
-static void picohash_sha1__pad_message(picohash_sha1_ctx_t *context, uint8_t Pad_Byte)
+static inline void picohash_sha1__pad_message(picohash_sha1_ctx_t *context, uint8_t Pad_Byte)
 {
     /*
      * Check to see if the current message block is too small to hold
@@ -531,7 +531,7 @@ static void picohash_sha1__pad_message(picohash_sha1_ctx_t *context, uint8_t Pad
     picohash_sha1__process_message_block(context);
 }
 
-static void picohash_sha1__finalize(picohash_sha1_ctx_t *context, uint8_t Pad_Byte)
+static inline void picohash_sha1__finalize(picohash_sha1_ctx_t *context, uint8_t Pad_Byte)
 {
     int i;
     picohash_sha1__pad_message(context, Pad_Byte);
@@ -542,7 +542,7 @@ static void picohash_sha1__finalize(picohash_sha1_ctx_t *context, uint8_t Pad_By
     context->Length_Low = 0;
 }
 
-void picohash_sha1_init(picohash_sha1_ctx_t *context)
+inline void picohash_sha1_init(picohash_sha1_ctx_t *context)
 {
     context->Length_High = context->Length_Low = 0;
     context->Message_Block_Index = 0;
@@ -555,7 +555,7 @@ void picohash_sha1_init(picohash_sha1_ctx_t *context)
     context->Intermediate_Hash[4] = 0xC3D2E1F0;
 }
 
-void picohash_sha1_update(picohash_sha1_ctx_t *context, const void *_message_array, size_t length)
+inline void picohash_sha1_update(picohash_sha1_ctx_t *context, const void *_message_array, size_t length)
 {
     const uint8_t *message_array = _message_array;
     uint32_t addTemp;
@@ -570,7 +570,7 @@ void picohash_sha1_update(picohash_sha1_ctx_t *context, const void *_message_arr
     }
 }
 
-void picohash_sha1_final(picohash_sha1_ctx_t *context, uint8_t *Message_Digest)
+inline void picohash_sha1_final(picohash_sha1_ctx_t *context, uint8_t *Message_Digest)
 {
     int i;
 
@@ -580,7 +580,7 @@ void picohash_sha1_final(picohash_sha1_ctx_t *context, uint8_t *Message_Digest)
         Message_Digest[i] = (uint8_t)(context->Intermediate_Hash[i >> 2] >> (8 * (3 - (i & 0x03))));
 }
 
-void picohash_hash_init(picohash_hash_ctx_t *ctx, int algo)
+inline void picohash_hash_init(picohash_hash_ctx_t *ctx, int algo)
 {
     switch (algo) {
     case PICOHASH_MD5:
@@ -601,12 +601,12 @@ void picohash_hash_init(picohash_hash_ctx_t *ctx, int algo)
     }
 }
 
-void picohash_hash_update(picohash_hash_ctx_t *ctx, const void *input, size_t len)
+inline void picohash_hash_update(picohash_hash_ctx_t *ctx, const void *input, size_t len)
 {
     ctx->update(ctx, input, len);
 }
 
-static void picohash_hash_final(picohash_hash_ctx_t *ctx, unsigned char *digest)
+inline void picohash_hash_final(picohash_hash_ctx_t *ctx, unsigned char *digest)
 {
     ctx->final(ctx, digest);
 }
