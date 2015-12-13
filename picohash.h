@@ -91,6 +91,7 @@
 #include <inttypes.h>
 #include <string.h>
 
+#define PICOHASH_MD5_BLOCK_LENGTH 64
 #define PICOHASH_MD5_DIGEST_LENGTH 16
 
 typedef struct {
@@ -103,6 +104,7 @@ static void picohash_md5_init(picohash_md5_ctx_t *ctx);
 static void picohash_md5_update(picohash_md5_ctx_t *ctx, const void *input, size_t len);
 static void picohash_md5_final(picohash_md5_ctx_t *ctx, unsigned char *digest);
 
+#define PICOHASH_SHA1_BLOCK_LENGTH 64
 #define PICOHASH_SHA1_DIGEST_LENGTH 20
 
 typedef struct {
@@ -127,6 +129,7 @@ typedef struct {
         picohash_md5_ctx_t md5;
         picohash_sha1_ctx_t sha1;
     };
+    size_t block_length;
     size_t digest_length;
     void (*update)(void *ctx, const void *input, size_t len);
     void (*final)(void *ctx, unsigned char *digest);
@@ -412,8 +415,6 @@ inline void picohash_md5_final(picohash_md5_ctx_t *context, unsigned char *diges
     memset(context, 0, sizeof(*context));
 }
 
-#define PICOHASH_SHA1__MESSAGE_BLOCK_SIZE 64
-
 static inline void picohash_sha1__process_message_block(picohash_sha1_ctx_t *context)
 {
 #define PICOHASH_SHA1__Ch(x, y, z) (((x) & ((y) ^ (z))) ^ (z))
@@ -504,16 +505,16 @@ static inline void picohash_sha1__pad_message(picohash_sha1_ctx_t *context, uint
      * block, process it, and then continue padding into a second
      * block.
      */
-    if (context->Message_Block_Index >= (PICOHASH_SHA1__MESSAGE_BLOCK_SIZE - 8)) {
+    if (context->Message_Block_Index >= (PICOHASH_SHA1_BLOCK_LENGTH - 8)) {
         context->Message_Block[context->Message_Block_Index++] = Pad_Byte;
-        while (context->Message_Block_Index < PICOHASH_SHA1__MESSAGE_BLOCK_SIZE)
+        while (context->Message_Block_Index < PICOHASH_SHA1_BLOCK_LENGTH)
             context->Message_Block[context->Message_Block_Index++] = 0;
 
         picohash_sha1__process_message_block(context);
     } else
         context->Message_Block[context->Message_Block_Index++] = Pad_Byte;
 
-    while (context->Message_Block_Index < (PICOHASH_SHA1__MESSAGE_BLOCK_SIZE - 8))
+    while (context->Message_Block_Index < (PICOHASH_SHA1_BLOCK_LENGTH - 8))
         context->Message_Block[context->Message_Block_Index++] = 0;
 
     /*
@@ -536,7 +537,7 @@ static inline void picohash_sha1__finalize(picohash_sha1_ctx_t *context, uint8_t
     int i;
     picohash_sha1__pad_message(context, Pad_Byte);
     /* message may be sensitive, clear it out */
-    for (i = 0; i < PICOHASH_SHA1__MESSAGE_BLOCK_SIZE; ++i)
+    for (i = 0; i < PICOHASH_SHA1_BLOCK_LENGTH; ++i)
         context->Message_Block[i] = 0;
     context->Length_High = 0; /* and clear length */
     context->Length_Low = 0;
@@ -585,12 +586,14 @@ inline void picohash_hash_init(picohash_hash_ctx_t *ctx, int algo)
     switch (algo) {
     case PICOHASH_MD5:
         picohash_md5_init(&ctx->md5);
+        ctx->block_length = PICOHASH_MD5_BLOCK_LENGTH;
         ctx->digest_length = PICOHASH_MD5_DIGEST_LENGTH;
         ctx->update = (void *)picohash_md5_update;
         ctx->final = (void *)picohash_md5_final;
         break;
     case PICOHASH_SHA1:
         picohash_sha1_init(&ctx->sha1);
+        ctx->block_length = PICOHASH_SHA1_BLOCK_LENGTH;
         ctx->digest_length = PICOHASH_SHA1_DIGEST_LENGTH;
         ctx->update = (void *)picohash_sha1_update;
         ctx->final = (void *)picohash_sha1_final;
