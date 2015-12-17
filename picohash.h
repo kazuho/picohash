@@ -638,7 +638,7 @@ static inline void _picohash_hmac_apply_key(picohash_ctx_t *ctx, unsigned char d
         ctx->_hmac.key[i] ^= delta;
 }
 
-inline void _picohash_hmac_final(picohash_ctx_t *ctx, void *digest)
+static void _picohash_hmac_final(picohash_ctx_t *ctx, void *digest)
 {
     unsigned char inner_digest[PICOHASH_MAX_DIGEST_LENGTH];
 
