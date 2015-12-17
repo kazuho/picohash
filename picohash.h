@@ -129,12 +129,13 @@ typedef struct {
     };
     size_t block_length;
     size_t digest_length;
-    void (*_init)(void *ctx);
+    void (*_reset)(void *ctx);
     void (*_update)(void *ctx, const void *input, size_t len);
-    void (*_final)(void *ctx, unsigned char *digest);
+    void (*_final)(void *ctx, void *digest);
     struct {
         unsigned char key[PICOHASH_MAX_BLOCK_LENGTH];
-        void (*hash_final)(void *ctx, unsigned char *digest);
+        void (*hash_reset)(void *ctx);
+        void (*hash_final)(void *ctx, void *digest);
     } _hmac;
 } picohash_ctx_t;
 
@@ -142,6 +143,7 @@ static void picohash_init_md5(picohash_ctx_t *ctx);
 static void picohash_init_sha1(picohash_ctx_t *ctx);
 static void picohash_update(picohash_ctx_t *ctx, const void *input, size_t len);
 static void picohash_final(picohash_ctx_t *ctx, void *digest);
+static void picohash_reset(picohash_ctx_t *ctx);
 
 static void picohash_init_hmac(picohash_ctx_t *ctx, void (*initf)(picohash_ctx_t *), const void *key, size_t key_len);
 
@@ -594,7 +596,7 @@ inline void picohash_init_md5(picohash_ctx_t *ctx)
 {
     ctx->block_length = PICOHASH_MD5_BLOCK_LENGTH;
     ctx->digest_length = PICOHASH_MD5_DIGEST_LENGTH;
-    ctx->_init = (void *)_picohash_md5_init;
+    ctx->_reset = (void *)_picohash_md5_init;
     ctx->_update = (void *)_picohash_md5_update;
     ctx->_final = (void *)_picohash_md5_final;
 
@@ -605,7 +607,7 @@ inline void picohash_init_sha1(picohash_ctx_t *ctx)
 {
     ctx->block_length = PICOHASH_SHA1_BLOCK_LENGTH;
     ctx->digest_length = PICOHASH_SHA1_DIGEST_LENGTH;
-    ctx->_init = (void *)_picohash_sha1_init;
+    ctx->_reset = (void *)_picohash_sha1_init;
     ctx->_update = (void *)_picohash_sha1_update;
     ctx->_final = (void *)_picohash_sha1_final;
     _picohash_sha1_init(&ctx->_sha1);
@@ -619,6 +621,11 @@ inline void picohash_update(picohash_ctx_t *ctx, const void *input, size_t len)
 inline void picohash_final(picohash_ctx_t *ctx, void *digest)
 {
     ctx->_final(ctx, digest);
+}
+
+inline void picohash_reset(picohash_ctx_t *ctx)
+{
+    ctx->_reset(ctx);
 }
 
 static inline void _picohash_hmac_apply_key(picohash_ctx_t *ctx, unsigned char delta)
@@ -637,12 +644,18 @@ inline void _picohash_hmac_final(picohash_ctx_t *ctx, void *digest)
 
     ctx->_hmac.hash_final(ctx, inner_digest);
 
-    ctx->_init(ctx);
+    ctx->_hmac.hash_reset(ctx);
     _picohash_hmac_apply_key(ctx, 0x5c);
     picohash_update(ctx, inner_digest, ctx->digest_length);
     memset(inner_digest, 0, ctx->digest_length);
 
     ctx->_hmac.hash_final(ctx, digest);
+}
+
+static inline void _picohash_hmac_reset(picohash_ctx_t *ctx)
+{
+    ctx->_hmac.hash_reset(ctx);
+    _picohash_hmac_apply_key(ctx, 0x36);
 }
 
 inline void picohash_init_hmac(picohash_ctx_t *ctx, void (*initf)(picohash_ctx_t *), const void *key, size_t key_len)
@@ -654,13 +667,15 @@ inline void picohash_init_hmac(picohash_ctx_t *ctx, void (*initf)(picohash_ctx_t
         /* hash the key if it is too long */
         picohash_update(ctx, key, key_len);
         picohash_final(ctx, ctx->_hmac.key);
-        ctx->_init(ctx);
+        ctx->_hmac.hash_reset(ctx);
     } else {
         memcpy(ctx->_hmac.key, key, key_len);
     }
 
-    /* replace final function */
+    /* replace reset and final function */
+    ctx->_hmac.hash_reset = ctx->_reset;
     ctx->_hmac.hash_final = ctx->_final;
+    ctx->_reset = (void *)_picohash_hmac_reset;
     ctx->_final = (void *)_picohash_hmac_final;
 
     /* start calculating the inner hash */
