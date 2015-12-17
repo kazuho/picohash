@@ -133,7 +133,7 @@ typedef struct {
     void (*_update)(void *ctx, const void *input, size_t len);
     void (*_final)(void *ctx, unsigned char *digest);
     struct {
-        unsigned char k_opad[PICOHASH_MAX_BLOCK_LENGTH];
+        unsigned char key[PICOHASH_MAX_BLOCK_LENGTH];
         void (*hash_final)(void *ctx, unsigned char *digest);
     } _hmac;
 } picohash_ctx_t;
@@ -621,6 +621,16 @@ inline void picohash_final(picohash_ctx_t *ctx, void *digest)
     ctx->_final(ctx, digest);
 }
 
+static inline void _picohash_hmac_apply_key(picohash_ctx_t *ctx, unsigned char delta)
+{
+    size_t i;
+    for (i = 0; i != ctx->block_length; ++i)
+        ctx->_hmac.key[i] ^= delta;
+    picohash_update(ctx, ctx->_hmac.key, ctx->block_length);
+    for (i = 0; i != ctx->block_length; ++i)
+        ctx->_hmac.key[i] ^= delta;
+}
+
 inline void _picohash_hmac_final(picohash_ctx_t *ctx, void *digest)
 {
     unsigned char inner_digest[PICOHASH_MAX_DIGEST_LENGTH];
@@ -628,7 +638,7 @@ inline void _picohash_hmac_final(picohash_ctx_t *ctx, void *digest)
     ctx->_hmac.hash_final(ctx, inner_digest);
 
     ctx->_init(ctx);
-    picohash_update(ctx, ctx->_hmac.k_opad, ctx->block_length);
+    _picohash_hmac_apply_key(ctx, 0x5c);
     picohash_update(ctx, inner_digest, ctx->digest_length);
     memset(inner_digest, 0, ctx->digest_length);
 
@@ -637,28 +647,16 @@ inline void _picohash_hmac_final(picohash_ctx_t *ctx, void *digest)
 
 inline void picohash_init_hmac(picohash_ctx_t *ctx, void (*initf)(picohash_ctx_t *), const void *key, size_t key_len)
 {
-    unsigned char keybuf[PICOHASH_MAX_BLOCK_LENGTH], k_ipad[PICOHASH_MAX_BLOCK_LENGTH];
-    size_t i;
-
     initf(ctx);
 
+    memset(ctx->_hmac.key, 0, ctx->block_length);
     if (key_len > ctx->block_length) {
-        /* replace key with the digest of the key, if it is long */
+        /* hash the key if it is too long */
         picohash_update(ctx, key, key_len);
-        picohash_final(ctx, keybuf);
-        key = keybuf;
-        key_len = ctx->digest_length;
+        picohash_final(ctx, ctx->_hmac.key);
         ctx->_init(ctx);
-    }
-
-    /* calculate ipad and opad */
-    memset(k_ipad, 0, ctx->block_length);
-    memcpy(k_ipad, key, key_len);
-    memset(ctx->_hmac.k_opad, 0, ctx->block_length);
-    memcpy(ctx->_hmac.k_opad, key, key_len);
-    for (i = 0; i != ctx->block_length; ++i) {
-        k_ipad[i] ^= 0x36;
-        ctx->_hmac.k_opad[i] ^= 0x5c;
+    } else {
+        memcpy(ctx->_hmac.key, key, key_len);
     }
 
     /* replace final function */
@@ -666,10 +664,7 @@ inline void picohash_init_hmac(picohash_ctx_t *ctx, void (*initf)(picohash_ctx_t
     ctx->_final = (void *)_picohash_hmac_final;
 
     /* start calculating the inner hash */
-    picohash_update(ctx, k_ipad, ctx->block_length);
-
-    /* reset ipad */
-    memset(k_ipad, 0, ctx->block_length);
+    _picohash_hmac_apply_key(ctx, 0x36);
 }
 
 #endif
