@@ -102,7 +102,7 @@ typedef struct {
 
 static void _picohash_md5_init(_picohash_md5_ctx_t *ctx);
 static void _picohash_md5_update(_picohash_md5_ctx_t *ctx, const void *input, size_t len);
-static void _picohash_md5_final(_picohash_md5_ctx_t *ctx, unsigned char *digest);
+static void _picohash_md5_final(_picohash_md5_ctx_t *ctx, void *digest);
 
 #define PICOHASH_SHA1_BLOCK_LENGTH 64
 #define PICOHASH_SHA1_DIGEST_LENGTH 20
@@ -117,7 +117,7 @@ typedef struct {
 
 static void _picohash_sha1_init(_picohash_sha1_ctx_t *ctx);
 static void _picohash_sha1_update(_picohash_sha1_ctx_t *ctx, const void *input, size_t len);
-static void _picohash_sha1_final(_picohash_sha1_ctx_t *ctx, unsigned char *digest);
+static void _picohash_sha1_final(_picohash_sha1_ctx_t *ctx, void *digest);
 
 #define PICOHASH_MAX_BLOCK_LENGTH 64
 #define PICOHASH_MAX_DIGEST_LENGTH 20
@@ -141,7 +141,7 @@ typedef struct {
 static void picohash_init_md5(picohash_ctx_t *ctx);
 static void picohash_init_sha1(picohash_ctx_t *ctx);
 static void picohash_update(picohash_ctx_t *ctx, const void *input, size_t len);
-static void picohash_final(picohash_ctx_t *ctx, unsigned char *digest);
+static void picohash_final(picohash_ctx_t *ctx, void *digest);
 
 static void picohash_init_hmac(picohash_ctx_t *ctx, void (*initf)(picohash_ctx_t *), const void *key, size_t key_len);
 
@@ -395,12 +395,12 @@ inline void _picohash_md5_update(_picohash_md5_ctx_t *context, const void *_inpu
 /* MD5 finalization. Ends an MD5 message-digest operation, writing the
   the message digest and zeroizing the context.
  */
-inline void _picohash_md5_final(_picohash_md5_ctx_t *context, unsigned char *digest)
+inline void _picohash_md5_final(_picohash_md5_ctx_t *context, void *_digest)
 {
     static const unsigned char PADDING[64] = {0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                                               0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                                               0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    unsigned char bits[8];
+    unsigned char bits[8], *digest = _digest;
     unsigned int index, padLen;
 
     /* Save number of bits */
@@ -579,8 +579,9 @@ inline void _picohash_sha1_update(_picohash_sha1_ctx_t *context, const void *_me
     }
 }
 
-inline void _picohash_sha1_final(_picohash_sha1_ctx_t *context, uint8_t *Message_Digest)
+inline void _picohash_sha1_final(_picohash_sha1_ctx_t *context, void *_Message_Digest)
 {
+    unsigned char *Message_Digest = _Message_Digest;
     int i;
 
     _picohash_sha1_finalize(context, 0x80);
@@ -615,12 +616,12 @@ inline void picohash_update(picohash_ctx_t *ctx, const void *input, size_t len)
     ctx->_update(ctx, input, len);
 }
 
-inline void picohash_final(picohash_ctx_t *ctx, unsigned char *digest)
+inline void picohash_final(picohash_ctx_t *ctx, void *digest)
 {
     ctx->_final(ctx, digest);
 }
 
-inline void _picohash_hmac_final(picohash_ctx_t *ctx, unsigned char *digest)
+inline void _picohash_hmac_final(picohash_ctx_t *ctx, void *digest)
 {
     unsigned char inner_digest[PICOHASH_MAX_DIGEST_LENGTH];
 
