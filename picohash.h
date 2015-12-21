@@ -6,8 +6,10 @@
  *
  * The SHA1 implementation is based on a public domain implementation written
  * by Wei Dai and other contributors for libcrypt, used also in liboauth.
+ * 
+ * The SHA224/SHA256 implementation is based on a public domain implementation
+ * by Sam Hocevar <sam@hocevar.net> for LibTomCrypt.
  */
-
 #ifndef _picohash_h_
 #define _picohash_h_
 
