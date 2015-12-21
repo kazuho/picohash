@@ -3,6 +3,8 @@ picohash
 
 picohash is a header-file-only implementation of MD5, SHA1, HMAC.
 
+The code is placed under public domain.
+
 Using MD5
 ---
 
