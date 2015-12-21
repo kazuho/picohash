@@ -20,29 +20,8 @@
  * IN THE SOFTWARE.
  *
  *
- * The MD5 implementation is based on the reference implementation found in RFC
- * 1321, provided under the following license:
- *
- * Copyright (C) 1991-2, RSA Data Security, Inc. Created 1991. All
- * rights reserved.
- *
- * License to copy and use this software is granted provided that it
- * is identified as the "RSA Data Security, Inc. MD5 Message-Digest
- * Algorithm" in all material mentioning or referencing this software
- * or this function.
- *
- * License is also granted to make and use derivative works provided
- * that such works are identified as "derived from the RSA Data
- * Security, Inc. MD5 Message-Digest Algorithm" in all material
- * mentioning or referencing the derived work.
- *
- * RSA Data Security, Inc. makes no representations concerning either
- * the merchantability of this software or the suitability of this
- * software for any particular purpose. It is provided "as is"
- * without express or implied warranty of any kind.
- *
- * These notices must be retained in any copies of any part of this
- * documentation and/or software.
+ * The MD5 implementation is based on a public domain implementation written by
+ * Solar Designer <solar@openwall.com> in 2001, which is used by Dovecot.
  *
  *
  * The SHA1 implementation is based on the reference implementation found in RFC
@@ -95,13 +74,14 @@
 #define PICOHASH_MD5_DIGEST_LENGTH 16
 
 typedef struct {
-    uint32_t state[4];
-    uint32_t count[2];
+    uint_fast32_t lo, hi;
+    uint_fast32_t a, b, c, d;
     unsigned char buffer[64];
+    uint_fast32_t block[PICOHASH_MD5_DIGEST_LENGTH];
 } _picohash_md5_ctx_t;
 
 static void _picohash_md5_init(_picohash_md5_ctx_t *ctx);
-static void _picohash_md5_update(_picohash_md5_ctx_t *ctx, const void *input, size_t len);
+static void _picohash_md5_update(_picohash_md5_ctx_t *ctx, const void *data, size_t size);
 static void _picohash_md5_final(_picohash_md5_ctx_t *ctx, void *digest);
 
 #define PICOHASH_SHA1_BLOCK_LENGTH 64
@@ -149,278 +129,249 @@ static void picohash_init_hmac(picohash_ctx_t *ctx, void (*initf)(picohash_ctx_t
 
 /* following are private definitions */
 
-/* Encodes input (uint32_t) into output (unsigned char). Assumes len is
-  a multiple of 4.
+/*
+ * The basic MD5 functions.
+ *
+ * F is optimized compared to its RFC 1321 definition just like in Colin
+ * Plumb's implementation.
  */
-static inline void _picohash_md5_encode(unsigned char *output, const uint32_t *input, unsigned int len)
-{
-    unsigned int i, j;
-
-    for (i = 0, j = 0; j < len; i++, j += 4) {
-        output[j] = (unsigned char)(input[i] & 0xff);
-        output[j + 1] = (unsigned char)((input[i] >> 8) & 0xff);
-        output[j + 2] = (unsigned char)((input[i] >> 16) & 0xff);
-        output[j + 3] = (unsigned char)((input[i] >> 24) & 0xff);
-    }
-}
-
-/* Decodes input (unsigned char) into output (uint32_t). Assumes len is
-  a multiple of 4.
- */
-static inline void _picohash_md5_decode(uint32_t *output, const unsigned char *input, unsigned int len)
-{
-    unsigned int i, j;
-
-    for (i = 0, j = 0; j < len; i++, j += 4)
-        output[i] = ((uint32_t)input[j]) | (((uint32_t)input[j + 1]) << 8) | (((uint32_t)input[j + 2]) << 16) |
-                    (((uint32_t)input[j + 3]) << 24);
-}
-
-/* MD5 basic transformation. Transforms state based on block.
- */
-static inline void _picohash_md5_transform(uint32_t state[4], const unsigned char block[64])
-{
-#define _PICOHASH_MD5_S11 7
-#define _PICOHASH_MD5_S12 12
-#define _PICOHASH_MD5_S13 17
-#define _PICOHASH_MD5_S14 22
-#define _PICOHASH_MD5_S21 5
-#define _PICOHASH_MD5_S22 9
-#define _PICOHASH_MD5_S23 14
-#define _PICOHASH_MD5_S24 20
-#define _PICOHASH_MD5_S31 4
-#define _PICOHASH_MD5_S32 11
-#define _PICOHASH_MD5_S33 16
-#define _PICOHASH_MD5_S34 23
-#define _PICOHASH_MD5_S41 6
-#define _PICOHASH_MD5_S42 10
-#define _PICOHASH_MD5_S43 15
-#define _PICOHASH_MD5_S44 21
-
-/* F, G, H and I are basic MD5 functions.
- */
-#define _PICOHASH_MD5_F(x, y, z) (((x) & (y)) | ((~x) & (z)))
-#define _PICOHASH_MD5_G(x, y, z) (((x) & (z)) | ((y) & (~z)))
+#define _PICOHASH_MD5_F(x, y, z) ((z) ^ ((x) & ((y) ^ (z))))
+#define _PICOHASH_MD5_G(x, y, z) ((y) ^ ((z) & ((x) ^ (y))))
 #define _PICOHASH_MD5_H(x, y, z) ((x) ^ (y) ^ (z))
-#define _PICOHASH_MD5_I(x, y, z) ((y) ^ ((x) | (~z)))
+#define _PICOHASH_MD5_I(x, y, z) ((y) ^ ((x) | ~(z)))
 
-/* ROTATE_LEFT rotates x left n bits.
+/*
+ * The MD5 transformation for all four rounds.
  */
-#define _PICOHASH_MD5_ROTATE_LEFT(x, n) (((x) << (n)) | ((x) >> (32 - (n))))
+#define _PICOHASH_MD5_STEP(f, a, b, c, d, x, t, s)                                                                                 \
+    (a) += f((b), (c), (d)) + (x) + (t);                                                                                           \
+    (a) = (((a) << (s)) | (((a)&0xffffffff) >> (32 - (s))));                                                                       \
+    (a) += (b);
 
-/* FF, GG, HH, and II transformations for rounds 1, 2, 3, and 4.
-Rotation is separate from addition to prevent recomputation.
+/*
+ * SET reads 4 input bytes in little-endian byte order and stores them
+ * in a properly aligned word in host byte order.
+ *
+ * The check for little-endian architectures which tolerate unaligned
+ * memory accesses is just an optimization.  Nothing will break if it
+ * doesn't work.
  */
-#define _PICOHASH_MD5_FF(a, b, c, d, x, s, ac)                                                                                     \
-    {                                                                                                                              \
-        (a) += _PICOHASH_MD5_F((b), (c), (d)) + (x) + (uint32_t)(ac);                                                              \
-        (a) = _PICOHASH_MD5_ROTATE_LEFT((a), (s));                                                                                 \
-        (a) += (b);                                                                                                                \
-    }
-#define _PICOHASH_MD5_GG(a, b, c, d, x, s, ac)                                                                                     \
-    {                                                                                                                              \
-        (a) += _PICOHASH_MD5_G((b), (c), (d)) + (x) + (uint32_t)(ac);                                                              \
-        (a) = _PICOHASH_MD5_ROTATE_LEFT((a), (s));                                                                                 \
-        (a) += (b);                                                                                                                \
-    }
-#define _PICOHASH_MD5_HH(a, b, c, d, x, s, ac)                                                                                     \
-    {                                                                                                                              \
-        (a) += _PICOHASH_MD5_H((b), (c), (d)) + (x) + (uint32_t)(ac);                                                              \
-        (a) = _PICOHASH_MD5_ROTATE_LEFT((a), (s));                                                                                 \
-        (a) += (b);                                                                                                                \
-    }
-#define _PICOHASH_MD5_II(a, b, c, d, x, s, ac)                                                                                     \
-    {                                                                                                                              \
-        (a) += _PICOHASH_MD5_I((b), (c), (d)) + (x) + (uint32_t)(ac);                                                              \
-        (a) = _PICOHASH_MD5_ROTATE_LEFT((a), (s));                                                                                 \
-        (a) += (b);                                                                                                                \
-    }
+#if defined(__i386__) || defined(__x86_64__) || defined(__vax__)
+#define _PICOHASH_MD5_SET(n) (*(const uint32_t *)&ptr[(n)*4])
+#define _PICOHASH_MD5_GET(n) _PICOHASH_MD5_SET(n)
+#else
+#define _PICOHASH_MD5_SET(n)                                                                                                       \
+    (ctx->block[(n)] = (uint_fast32_t)ptr[(n)*4] | ((uint_fast32_t)ptr[(n)*4 + 1] << 8) | ((uint_fast32_t)ptr[(n)*4 + 2] << 16) |  \
+                       ((uint_fast32_t)ptr[(n)*4 + 3] << 24))
+#define _PICOHASH_MD5_GET(n) (ctx->block[(n)])
+#endif
 
-    uint32_t a = state[0], b = state[1], c = state[2], d = state[3], x[16];
+/*
+ * This processes one or more 64-byte data blocks, but does NOT update
+ * the bit counters.  There're no alignment requirements.
+ */
+static const void *_picohash_md5_body(_picohash_md5_ctx_t *ctx, const void *data, size_t size)
+{
+    const unsigned char *ptr;
+    uint_fast32_t a, b, c, d;
+    uint_fast32_t saved_a, saved_b, saved_c, saved_d;
 
-    _picohash_md5_decode(x, block, 64);
+    ptr = data;
 
-    /* Round 1 */
-    _PICOHASH_MD5_FF(a, b, c, d, x[0], _PICOHASH_MD5_S11, 0xd76aa478);  /* 1 */
-    _PICOHASH_MD5_FF(d, a, b, c, x[1], _PICOHASH_MD5_S12, 0xe8c7b756);  /* 2 */
-    _PICOHASH_MD5_FF(c, d, a, b, x[2], _PICOHASH_MD5_S13, 0x242070db);  /* 3 */
-    _PICOHASH_MD5_FF(b, c, d, a, x[3], _PICOHASH_MD5_S14, 0xc1bdceee);  /* 4 */
-    _PICOHASH_MD5_FF(a, b, c, d, x[4], _PICOHASH_MD5_S11, 0xf57c0faf);  /* 5 */
-    _PICOHASH_MD5_FF(d, a, b, c, x[5], _PICOHASH_MD5_S12, 0x4787c62a);  /* 6 */
-    _PICOHASH_MD5_FF(c, d, a, b, x[6], _PICOHASH_MD5_S13, 0xa8304613);  /* 7 */
-    _PICOHASH_MD5_FF(b, c, d, a, x[7], _PICOHASH_MD5_S14, 0xfd469501);  /* 8 */
-    _PICOHASH_MD5_FF(a, b, c, d, x[8], _PICOHASH_MD5_S11, 0x698098d8);  /* 9 */
-    _PICOHASH_MD5_FF(d, a, b, c, x[9], _PICOHASH_MD5_S12, 0x8b44f7af);  /* 10 */
-    _PICOHASH_MD5_FF(c, d, a, b, x[10], _PICOHASH_MD5_S13, 0xffff5bb1); /* 11 */
-    _PICOHASH_MD5_FF(b, c, d, a, x[11], _PICOHASH_MD5_S14, 0x895cd7be); /* 12 */
-    _PICOHASH_MD5_FF(a, b, c, d, x[12], _PICOHASH_MD5_S11, 0x6b901122); /* 13 */
-    _PICOHASH_MD5_FF(d, a, b, c, x[13], _PICOHASH_MD5_S12, 0xfd987193); /* 14 */
-    _PICOHASH_MD5_FF(c, d, a, b, x[14], _PICOHASH_MD5_S13, 0xa679438e); /* 15 */
-    _PICOHASH_MD5_FF(b, c, d, a, x[15], _PICOHASH_MD5_S14, 0x49b40821); /* 16 */
+    a = ctx->a;
+    b = ctx->b;
+    c = ctx->c;
+    d = ctx->d;
 
-    /* Round 2 */
-    _PICOHASH_MD5_GG(a, b, c, d, x[1], _PICOHASH_MD5_S21, 0xf61e2562);  /* 17 */
-    _PICOHASH_MD5_GG(d, a, b, c, x[6], _PICOHASH_MD5_S22, 0xc040b340);  /* 18 */
-    _PICOHASH_MD5_GG(c, d, a, b, x[11], _PICOHASH_MD5_S23, 0x265e5a51); /* 19 */
-    _PICOHASH_MD5_GG(b, c, d, a, x[0], _PICOHASH_MD5_S24, 0xe9b6c7aa);  /* 20 */
-    _PICOHASH_MD5_GG(a, b, c, d, x[5], _PICOHASH_MD5_S21, 0xd62f105d);  /* 21 */
-    _PICOHASH_MD5_GG(d, a, b, c, x[10], _PICOHASH_MD5_S22, 0x2441453);  /* 22 */
-    _PICOHASH_MD5_GG(c, d, a, b, x[15], _PICOHASH_MD5_S23, 0xd8a1e681); /* 23 */
-    _PICOHASH_MD5_GG(b, c, d, a, x[4], _PICOHASH_MD5_S24, 0xe7d3fbc8);  /* 24 */
-    _PICOHASH_MD5_GG(a, b, c, d, x[9], _PICOHASH_MD5_S21, 0x21e1cde6);  /* 25 */
-    _PICOHASH_MD5_GG(d, a, b, c, x[14], _PICOHASH_MD5_S22, 0xc33707d6); /* 26 */
-    _PICOHASH_MD5_GG(c, d, a, b, x[3], _PICOHASH_MD5_S23, 0xf4d50d87);  /* 27 */
-    _PICOHASH_MD5_GG(b, c, d, a, x[8], _PICOHASH_MD5_S24, 0x455a14ed);  /* 28 */
-    _PICOHASH_MD5_GG(a, b, c, d, x[13], _PICOHASH_MD5_S21, 0xa9e3e905); /* 29 */
-    _PICOHASH_MD5_GG(d, a, b, c, x[2], _PICOHASH_MD5_S22, 0xfcefa3f8);  /* 30 */
-    _PICOHASH_MD5_GG(c, d, a, b, x[7], _PICOHASH_MD5_S23, 0x676f02d9);  /* 31 */
-    _PICOHASH_MD5_GG(b, c, d, a, x[12], _PICOHASH_MD5_S24, 0x8d2a4c8a); /* 32 */
+    do {
+        saved_a = a;
+        saved_b = b;
+        saved_c = c;
+        saved_d = d;
 
-    /* Round 3 */
-    _PICOHASH_MD5_HH(a, b, c, d, x[5], _PICOHASH_MD5_S31, 0xfffa3942);  /* 33 */
-    _PICOHASH_MD5_HH(d, a, b, c, x[8], _PICOHASH_MD5_S32, 0x8771f681);  /* 34 */
-    _PICOHASH_MD5_HH(c, d, a, b, x[11], _PICOHASH_MD5_S33, 0x6d9d6122); /* 35 */
-    _PICOHASH_MD5_HH(b, c, d, a, x[14], _PICOHASH_MD5_S34, 0xfde5380c); /* 36 */
-    _PICOHASH_MD5_HH(a, b, c, d, x[1], _PICOHASH_MD5_S31, 0xa4beea44);  /* 37 */
-    _PICOHASH_MD5_HH(d, a, b, c, x[4], _PICOHASH_MD5_S32, 0x4bdecfa9);  /* 38 */
-    _PICOHASH_MD5_HH(c, d, a, b, x[7], _PICOHASH_MD5_S33, 0xf6bb4b60);  /* 39 */
-    _PICOHASH_MD5_HH(b, c, d, a, x[10], _PICOHASH_MD5_S34, 0xbebfbc70); /* 40 */
-    _PICOHASH_MD5_HH(a, b, c, d, x[13], _PICOHASH_MD5_S31, 0x289b7ec6); /* 41 */
-    _PICOHASH_MD5_HH(d, a, b, c, x[0], _PICOHASH_MD5_S32, 0xeaa127fa);  /* 42 */
-    _PICOHASH_MD5_HH(c, d, a, b, x[3], _PICOHASH_MD5_S33, 0xd4ef3085);  /* 43 */
-    _PICOHASH_MD5_HH(b, c, d, a, x[6], _PICOHASH_MD5_S34, 0x4881d05);   /* 44 */
-    _PICOHASH_MD5_HH(a, b, c, d, x[9], _PICOHASH_MD5_S31, 0xd9d4d039);  /* 45 */
-    _PICOHASH_MD5_HH(d, a, b, c, x[12], _PICOHASH_MD5_S32, 0xe6db99e5); /* 46 */
-    _PICOHASH_MD5_HH(c, d, a, b, x[15], _PICOHASH_MD5_S33, 0x1fa27cf8); /* 47 */
-    _PICOHASH_MD5_HH(b, c, d, a, x[2], _PICOHASH_MD5_S34, 0xc4ac5665);  /* 48 */
+        /* Round 1 */
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, a, b, c, d, _PICOHASH_MD5_SET(0), 0xd76aa478, 7)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, d, a, b, c, _PICOHASH_MD5_SET(1), 0xe8c7b756, 12)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, c, d, a, b, _PICOHASH_MD5_SET(2), 0x242070db, 17)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, b, c, d, a, _PICOHASH_MD5_SET(3), 0xc1bdceee, 22)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, a, b, c, d, _PICOHASH_MD5_SET(4), 0xf57c0faf, 7)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, d, a, b, c, _PICOHASH_MD5_SET(5), 0x4787c62a, 12)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, c, d, a, b, _PICOHASH_MD5_SET(6), 0xa8304613, 17)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, b, c, d, a, _PICOHASH_MD5_SET(7), 0xfd469501, 22)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, a, b, c, d, _PICOHASH_MD5_SET(8), 0x698098d8, 7)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, d, a, b, c, _PICOHASH_MD5_SET(9), 0x8b44f7af, 12)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, c, d, a, b, _PICOHASH_MD5_SET(10), 0xffff5bb1, 17)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, b, c, d, a, _PICOHASH_MD5_SET(11), 0x895cd7be, 22)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, a, b, c, d, _PICOHASH_MD5_SET(12), 0x6b901122, 7)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, d, a, b, c, _PICOHASH_MD5_SET(13), 0xfd987193, 12)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, c, d, a, b, _PICOHASH_MD5_SET(14), 0xa679438e, 17)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_F, b, c, d, a, _PICOHASH_MD5_SET(15), 0x49b40821, 22)
 
-    /* Round 4 */
-    _PICOHASH_MD5_II(a, b, c, d, x[0], _PICOHASH_MD5_S41, 0xf4292244);  /* 49 */
-    _PICOHASH_MD5_II(d, a, b, c, x[7], _PICOHASH_MD5_S42, 0x432aff97);  /* 50 */
-    _PICOHASH_MD5_II(c, d, a, b, x[14], _PICOHASH_MD5_S43, 0xab9423a7); /* 51 */
-    _PICOHASH_MD5_II(b, c, d, a, x[5], _PICOHASH_MD5_S44, 0xfc93a039);  /* 52 */
-    _PICOHASH_MD5_II(a, b, c, d, x[12], _PICOHASH_MD5_S41, 0x655b59c3); /* 53 */
-    _PICOHASH_MD5_II(d, a, b, c, x[3], _PICOHASH_MD5_S42, 0x8f0ccc92);  /* 54 */
-    _PICOHASH_MD5_II(c, d, a, b, x[10], _PICOHASH_MD5_S43, 0xffeff47d); /* 55 */
-    _PICOHASH_MD5_II(b, c, d, a, x[1], _PICOHASH_MD5_S44, 0x85845dd1);  /* 56 */
-    _PICOHASH_MD5_II(a, b, c, d, x[8], _PICOHASH_MD5_S41, 0x6fa87e4f);  /* 57 */
-    _PICOHASH_MD5_II(d, a, b, c, x[15], _PICOHASH_MD5_S42, 0xfe2ce6e0); /* 58 */
-    _PICOHASH_MD5_II(c, d, a, b, x[6], _PICOHASH_MD5_S43, 0xa3014314);  /* 59 */
-    _PICOHASH_MD5_II(b, c, d, a, x[13], _PICOHASH_MD5_S44, 0x4e0811a1); /* 60 */
-    _PICOHASH_MD5_II(a, b, c, d, x[4], _PICOHASH_MD5_S41, 0xf7537e82);  /* 61 */
-    _PICOHASH_MD5_II(d, a, b, c, x[11], _PICOHASH_MD5_S42, 0xbd3af235); /* 62 */
-    _PICOHASH_MD5_II(c, d, a, b, x[2], _PICOHASH_MD5_S43, 0x2ad7d2bb);  /* 63 */
-    _PICOHASH_MD5_II(b, c, d, a, x[9], _PICOHASH_MD5_S44, 0xeb86d391);  /* 64 */
+        /* Round 2 */
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, a, b, c, d, _PICOHASH_MD5_GET(1), 0xf61e2562, 5)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, d, a, b, c, _PICOHASH_MD5_GET(6), 0xc040b340, 9)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, c, d, a, b, _PICOHASH_MD5_GET(11), 0x265e5a51, 14)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, b, c, d, a, _PICOHASH_MD5_GET(0), 0xe9b6c7aa, 20)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, a, b, c, d, _PICOHASH_MD5_GET(5), 0xd62f105d, 5)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, d, a, b, c, _PICOHASH_MD5_GET(10), 0x02441453, 9)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, c, d, a, b, _PICOHASH_MD5_GET(15), 0xd8a1e681, 14)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, b, c, d, a, _PICOHASH_MD5_GET(4), 0xe7d3fbc8, 20)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, a, b, c, d, _PICOHASH_MD5_GET(9), 0x21e1cde6, 5)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, d, a, b, c, _PICOHASH_MD5_GET(14), 0xc33707d6, 9)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, c, d, a, b, _PICOHASH_MD5_GET(3), 0xf4d50d87, 14)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, b, c, d, a, _PICOHASH_MD5_GET(8), 0x455a14ed, 20)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, a, b, c, d, _PICOHASH_MD5_GET(13), 0xa9e3e905, 5)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, d, a, b, c, _PICOHASH_MD5_GET(2), 0xfcefa3f8, 9)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, c, d, a, b, _PICOHASH_MD5_GET(7), 0x676f02d9, 14)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_G, b, c, d, a, _PICOHASH_MD5_GET(12), 0x8d2a4c8a, 20)
 
-    state[0] += a;
-    state[1] += b;
-    state[2] += c;
-    state[3] += d;
+        /* Round 3 */
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, a, b, c, d, _PICOHASH_MD5_GET(5), 0xfffa3942, 4)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, d, a, b, c, _PICOHASH_MD5_GET(8), 0x8771f681, 11)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, c, d, a, b, _PICOHASH_MD5_GET(11), 0x6d9d6122, 16)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, b, c, d, a, _PICOHASH_MD5_GET(14), 0xfde5380c, 23)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, a, b, c, d, _PICOHASH_MD5_GET(1), 0xa4beea44, 4)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, d, a, b, c, _PICOHASH_MD5_GET(4), 0x4bdecfa9, 11)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, c, d, a, b, _PICOHASH_MD5_GET(7), 0xf6bb4b60, 16)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, b, c, d, a, _PICOHASH_MD5_GET(10), 0xbebfbc70, 23)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, a, b, c, d, _PICOHASH_MD5_GET(13), 0x289b7ec6, 4)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, d, a, b, c, _PICOHASH_MD5_GET(0), 0xeaa127fa, 11)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, c, d, a, b, _PICOHASH_MD5_GET(3), 0xd4ef3085, 16)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, b, c, d, a, _PICOHASH_MD5_GET(6), 0x04881d05, 23)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, a, b, c, d, _PICOHASH_MD5_GET(9), 0xd9d4d039, 4)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, d, a, b, c, _PICOHASH_MD5_GET(12), 0xe6db99e5, 11)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, c, d, a, b, _PICOHASH_MD5_GET(15), 0x1fa27cf8, 16)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_H, b, c, d, a, _PICOHASH_MD5_GET(2), 0xc4ac5665, 23)
 
-    /* Zeroize sensitive information. */
-    memset(x, 0, sizeof(x));
+        /* Round 4 */
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, a, b, c, d, _PICOHASH_MD5_GET(0), 0xf4292244, 6)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, d, a, b, c, _PICOHASH_MD5_GET(7), 0x432aff97, 10)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, c, d, a, b, _PICOHASH_MD5_GET(14), 0xab9423a7, 15)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, b, c, d, a, _PICOHASH_MD5_GET(5), 0xfc93a039, 21)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, a, b, c, d, _PICOHASH_MD5_GET(12), 0x655b59c3, 6)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, d, a, b, c, _PICOHASH_MD5_GET(3), 0x8f0ccc92, 10)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, c, d, a, b, _PICOHASH_MD5_GET(10), 0xffeff47d, 15)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, b, c, d, a, _PICOHASH_MD5_GET(1), 0x85845dd1, 21)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, a, b, c, d, _PICOHASH_MD5_GET(8), 0x6fa87e4f, 6)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, d, a, b, c, _PICOHASH_MD5_GET(15), 0xfe2ce6e0, 10)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, c, d, a, b, _PICOHASH_MD5_GET(6), 0xa3014314, 15)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, b, c, d, a, _PICOHASH_MD5_GET(13), 0x4e0811a1, 21)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, a, b, c, d, _PICOHASH_MD5_GET(4), 0xf7537e82, 6)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, d, a, b, c, _PICOHASH_MD5_GET(11), 0xbd3af235, 10)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, c, d, a, b, _PICOHASH_MD5_GET(2), 0x2ad7d2bb, 15)
+        _PICOHASH_MD5_STEP(_PICOHASH_MD5_I, b, c, d, a, _PICOHASH_MD5_GET(9), 0xeb86d391, 21)
 
-#undef _PICOHASH_MD5_S11
-#undef _PICOHASH_MD5_S12
-#undef _PICOHASH_MD5_S13
-#undef _PICOHASH_MD5_S14
-#undef _PICOHASH_MD5_S21
-#undef _PICOHASH_MD5_S22
-#undef _PICOHASH_MD5_S23
-#undef _PICOHASH_MD5_S24
-#undef _PICOHASH_MD5_S31
-#undef _PICOHASH_MD5_S32
-#undef _PICOHASH_MD5_S33
-#undef _PICOHASH_MD5_S34
-#undef _PICOHASH_MD5_S41
-#undef _PICOHASH_MD5_S42
-#undef _PICOHASH_MD5_S43
-#undef _PICOHASH_MD5_S44
-#undef _PICOHASH_MD5_F
-#undef _PICOHASH_MD5_G
-#undef _PICOHASH_MD5_H
-#undef _PICOHASH_MD5_I
-#undef _PICOHASH_MD5_ROTATE_LEFT
-#undef _PICOHASH_MD5_FF
-#undef _PICOHASH_MD5_GG
-#undef _PICOHASH_MD5_HH
-#undef _PICOHASH_MD5_II
+        a += saved_a;
+        b += saved_b;
+        c += saved_c;
+        d += saved_d;
+
+        ptr += 64;
+    } while (size -= 64);
+
+    ctx->a = a;
+    ctx->b = b;
+    ctx->c = c;
+    ctx->d = d;
+
+    return ptr;
 }
 
-/* MD5 initialization. Begins an MD5 operation, writing a new context.
- */
-inline void _picohash_md5_init(_picohash_md5_ctx_t *context)
+inline void _picohash_md5_init(_picohash_md5_ctx_t *ctx)
 {
-    context->count[0] = context->count[1] = 0;
-    /* Load magic initialization constants. */
-    context->state[0] = 0x67452301;
-    context->state[1] = 0xefcdab89;
-    context->state[2] = 0x98badcfe;
-    context->state[3] = 0x10325476;
+    ctx->a = 0x67452301;
+    ctx->b = 0xefcdab89;
+    ctx->c = 0x98badcfe;
+    ctx->d = 0x10325476;
+
+    ctx->lo = 0;
+    ctx->hi = 0;
 }
 
-/* MD5 block update operation. Continues an MD5 message-digest
-  operation, processing another message block, and updating the
-  context.
- */
-inline void _picohash_md5_update(_picohash_md5_ctx_t *context, const void *_input, size_t inputLen)
+inline void _picohash_md5_update(_picohash_md5_ctx_t *ctx, const void *data, size_t size)
 {
-    const unsigned char *input = _input;
-    size_t i, index, partLen;
+    uint_fast32_t saved_lo;
+    unsigned long used, free;
 
-    /* Compute number of bytes mod 64 */
-    index = (unsigned int)((context->count[0] >> 3) & 0x3F);
+    saved_lo = ctx->lo;
+    if ((ctx->lo = (saved_lo + size) & 0x1fffffff) < saved_lo)
+        ctx->hi++;
+    ctx->hi += size >> 29;
 
-    /* Update number of bits */
-    if ((context->count[0] += ((uint32_t)inputLen << 3)) < ((uint32_t)inputLen << 3))
-        context->count[1]++;
-    context->count[1] += ((uint32_t)inputLen >> 29);
+    used = saved_lo & 0x3f;
 
-    partLen = 64 - index;
+    if (used) {
+        free = 64 - used;
 
-    /* Transform as many times as possible. */
-    if (inputLen >= partLen) {
-        memcpy(&context->buffer[index], input, partLen);
-        _picohash_md5_transform(context->state, context->buffer);
+        if (size < free) {
+            memcpy(&ctx->buffer[used], data, size);
+            return;
+        }
 
-        for (i = partLen; i + 63 < inputLen; i += 64)
-            _picohash_md5_transform(context->state, &input[i]);
+        memcpy(&ctx->buffer[used], data, free);
+        data = (const unsigned char *)data + free;
+        size -= free;
+        _picohash_md5_body(ctx, ctx->buffer, 64);
+    }
 
-        index = 0;
-    } else
-        i = 0;
+    if (size >= 64) {
+        data = _picohash_md5_body(ctx, data, size & ~(unsigned long)0x3f);
+        size &= 0x3f;
+    }
 
-    /* Buffer remaining input */
-    memcpy(&context->buffer[index], &input[i], inputLen - i);
+    memcpy(ctx->buffer, data, size);
 }
 
-/* MD5 finalization. Ends an MD5 message-digest operation, writing the
-  the message digest and zeroizing the context.
- */
-inline void _picohash_md5_final(_picohash_md5_ctx_t *context, void *_digest)
+inline void _picohash_md5_final(_picohash_md5_ctx_t *ctx, void *_digest)
 {
-    static const unsigned char PADDING[64] = {0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                                              0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                                              0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    unsigned char bits[8], *digest = _digest;
-    unsigned int index, padLen;
+    unsigned char *digest = _digest;
+    unsigned long used, free;
 
-    /* Save number of bits */
-    _picohash_md5_encode(bits, context->count, 8);
+    used = ctx->lo & 0x3f;
 
-    /* Pad out to 56 mod 64. */
-    index = (unsigned int)((context->count[0] >> 3) & 0x3f);
-    padLen = (index < 56) ? (56 - index) : (120 - index);
-    _picohash_md5_update(context, PADDING, padLen);
+    ctx->buffer[used++] = 0x80;
 
-    /* Append length (before padding) */
-    _picohash_md5_update(context, bits, 8);
+    free = 64 - used;
 
-    /* Store state in digest */
-    _picohash_md5_encode(digest, context->state, 16);
+    if (free < 8) {
+        memset(&ctx->buffer[used], 0, free);
+        _picohash_md5_body(ctx, ctx->buffer, 64);
+        used = 0;
+        free = 64;
+    }
 
-    /* Zeroize sensitive information. */
-    memset(context, 0, sizeof(*context));
+    memset(&ctx->buffer[used], 0, free - 8);
+
+    ctx->lo <<= 3;
+    ctx->buffer[56] = ctx->lo;
+    ctx->buffer[57] = ctx->lo >> 8;
+    ctx->buffer[58] = ctx->lo >> 16;
+    ctx->buffer[59] = ctx->lo >> 24;
+    ctx->buffer[60] = ctx->hi;
+    ctx->buffer[61] = ctx->hi >> 8;
+    ctx->buffer[62] = ctx->hi >> 16;
+    ctx->buffer[63] = ctx->hi >> 24;
+
+    _picohash_md5_body(ctx, ctx->buffer, 64);
+
+    digest[0] = ctx->a;
+    digest[1] = ctx->a >> 8;
+    digest[2] = ctx->a >> 16;
+    digest[3] = ctx->a >> 24;
+    digest[4] = ctx->b;
+    digest[5] = ctx->b >> 8;
+    digest[6] = ctx->b >> 16;
+    digest[7] = ctx->b >> 24;
+    digest[8] = ctx->c;
+    digest[9] = ctx->c >> 8;
+    digest[10] = ctx->c >> 16;
+    digest[11] = ctx->c >> 24;
+    digest[12] = ctx->d;
+    digest[13] = ctx->d >> 8;
+    digest[14] = ctx->d >> 16;
+    digest[15] = ctx->d >> 24;
+
+    memset(ctx, 0, sizeof(*ctx));
 }
 
 static inline void _picohash_sha1_process_message_block(_picohash_sha1_ctx_t *context)
