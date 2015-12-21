@@ -23,45 +23,9 @@
  * The MD5 implementation is based on a public domain implementation written by
  * Solar Designer <solar@openwall.com> in 2001, which is used by Dovecot.
  *
- *
- * The SHA1 implementation is based on the reference implementation found in RFC
- * 6234, provided under the following license:
- *
- * Copyright (c) 2011 IETF Trust and the persons identified as
- * authors of the code.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or
- * without modification, are permitted provided that the following
- * conditions are met:
- *
- * - Redistributions of source code must retain the above
- *   copyright notice, this list of conditions and
- *   the following disclaimer.
- *
- * - Redistributions in binary form must reproduce the above
- *   copyright notice, this list of conditions and the following
- *   disclaimer in the documentation and/or other materials provided
- *   with the distribution.
- *
- * - Neither the name of Internet Society, IETF or IETF Trust, nor
- *   the names of specific contributors, may be used to endorse or
- *   promote products derived from this software without specific
- *   prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
- * CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
- * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+ * The SHA1 implementation is based on a public domain implementation written
+ * by Wei Dai and other contributors for libcrypt, used also in liboauth.
+ */
 
 #ifndef _picohash_h_
 #define _picohash_h_
@@ -69,6 +33,21 @@
 #include <assert.h>
 #include <inttypes.h>
 #include <string.h>
+
+#ifdef __BIG_ENDIAN__
+#define _PICOHASH_BIG_ENDIAN
+#elif defined __LITTLE_ENDIAN__
+/* override */
+#elif defined __BYTE_ORDER
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define _PICOHASH_BIG_ENDIAN
+#endif
+#else               // ! defined __LITTLE_ENDIAN__
+#include <endian.h> // machine/endian.h
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define _PICOHASH_BIG_ENDIAN
+#endif
+#endif
 
 #define PICOHASH_MD5_BLOCK_LENGTH 64
 #define PICOHASH_MD5_DIGEST_LENGTH 16
@@ -88,11 +67,10 @@ static void _picohash_md5_final(_picohash_md5_ctx_t *ctx, void *digest);
 #define PICOHASH_SHA1_DIGEST_LENGTH 20
 
 typedef struct {
-    uint32_t Intermediate_Hash[PICOHASH_SHA1_DIGEST_LENGTH / 4];
-    uint32_t Length_Low;
-    uint32_t Length_High;
-    int_least16_t Message_Block_Index;
-    uint8_t Message_Block[64];
+    uint32_t buffer[PICOHASH_SHA1_BLOCK_LENGTH / 4];
+    uint32_t state[PICOHASH_SHA1_DIGEST_LENGTH / 4];
+    uint64_t byteCount;
+    uint8_t bufferOffset;
 } _picohash_sha1_ctx_t;
 
 static void _picohash_sha1_init(_picohash_sha1_ctx_t *ctx);
@@ -374,173 +352,116 @@ inline void _picohash_md5_final(_picohash_md5_ctx_t *ctx, void *_digest)
     memset(ctx, 0, sizeof(*ctx));
 }
 
-static inline void _picohash_sha1_process_message_block(_picohash_sha1_ctx_t *context)
+#define _PICOHASH_SHA1_K0 0x5a827999
+#define _PICOHASH_SHA1_K20 0x6ed9eba1
+#define _PICOHASH_SHA1_K40 0x8f1bbcdc
+#define _PICOHASH_SHA1_K60 0xca62c1d6
+
+static inline uint32_t _picohash_sha1_rol32(uint32_t number, uint8_t bits)
 {
-#define _PICOHASH_SHA1_Ch(x, y, z) (((x) & ((y) ^ (z))) ^ (z))
-#define _PICOHASH_SHA1_Maj(x, y, z) (((x) & ((y) | (z))) | ((y) & (z)))
-#define _PICOHASH_SHA1_Parity(x, y, z) ((x) ^ (y) ^ (z))
-#define _PICOHASH_SHA1_ROTL(bits, word) (((word) << (bits)) | ((word) >> (32 - (bits))))
-
-    /* Constants defined in FIPS 180-3, section 4.2.1 */
-    const uint32_t K[4] = {0x5A827999, 0x6ED9EBA1, 0x8F1BBCDC, 0xCA62C1D6};
-    int t;                  /* Loop counter */
-    uint32_t temp;          /* Temporary word value */
-    uint32_t W[80];         /* Word sequence */
-    uint32_t A, B, C, D, E; /* Word buffers */
-
-    /*
-     * Initialize the first 16 words in the array W
-     */
-    for (t = 0; t < 16; t++) {
-        W[t] = ((uint32_t)context->Message_Block[t * 4]) << 24;
-        W[t] |= ((uint32_t)context->Message_Block[t * 4 + 1]) << 16;
-        W[t] |= ((uint32_t)context->Message_Block[t * 4 + 2]) << 8;
-        W[t] |= ((uint32_t)context->Message_Block[t * 4 + 3]);
-    }
-
-    for (t = 16; t < 80; t++)
-        W[t] = _PICOHASH_SHA1_ROTL(1, W[t - 3] ^ W[t - 8] ^ W[t - 14] ^ W[t - 16]);
-
-    A = context->Intermediate_Hash[0];
-    B = context->Intermediate_Hash[1];
-    C = context->Intermediate_Hash[2];
-    D = context->Intermediate_Hash[3];
-    E = context->Intermediate_Hash[4];
-
-    for (t = 0; t < 20; t++) {
-        temp = _PICOHASH_SHA1_ROTL(5, A) + _PICOHASH_SHA1_Ch(B, C, D) + E + W[t] + K[0];
-        E = D;
-        D = C;
-        C = _PICOHASH_SHA1_ROTL(30, B);
-        B = A;
-        A = temp;
-    }
-
-    for (t = 20; t < 40; t++) {
-        temp = _PICOHASH_SHA1_ROTL(5, A) + _PICOHASH_SHA1_Parity(B, C, D) + E + W[t] + K[1];
-        E = D;
-        D = C;
-        C = _PICOHASH_SHA1_ROTL(30, B);
-        B = A;
-        A = temp;
-    }
-
-    for (t = 40; t < 60; t++) {
-        temp = _PICOHASH_SHA1_ROTL(5, A) + _PICOHASH_SHA1_Maj(B, C, D) + E + W[t] + K[2];
-        E = D;
-        D = C;
-        C = _PICOHASH_SHA1_ROTL(30, B);
-        B = A;
-        A = temp;
-    }
-
-    for (t = 60; t < 80; t++) {
-        temp = _PICOHASH_SHA1_ROTL(5, A) + _PICOHASH_SHA1_Parity(B, C, D) + E + W[t] + K[3];
-        E = D;
-        D = C;
-        C = _PICOHASH_SHA1_ROTL(30, B);
-        B = A;
-        A = temp;
-    }
-
-    context->Intermediate_Hash[0] += A;
-    context->Intermediate_Hash[1] += B;
-    context->Intermediate_Hash[2] += C;
-    context->Intermediate_Hash[3] += D;
-    context->Intermediate_Hash[4] += E;
-    context->Message_Block_Index = 0;
-
-#undef _PICOHASH_SHA1_Ch
-#undef _PICOHASH_SHA1_Maj
-#undef _PICOHASH_SHA1_Parity
-#undef _PICOHASH_SHA1_ROTL
+    return ((number << bits) | (number >> (32 - bits)));
 }
 
-static inline void _picohash_sha1_pad_message(_picohash_sha1_ctx_t *context, uint8_t Pad_Byte)
+static inline void _picohash_sha1_hash_block(_picohash_sha1_ctx_t *s)
 {
-    /*
-     * Check to see if the current message block is too small to hold
-     * the initial padding bits and length.  If so, we will pad the
-     * block, process it, and then continue padding into a second
-     * block.
-     */
-    if (context->Message_Block_Index >= (PICOHASH_SHA1_BLOCK_LENGTH - 8)) {
-        context->Message_Block[context->Message_Block_Index++] = Pad_Byte;
-        while (context->Message_Block_Index < PICOHASH_SHA1_BLOCK_LENGTH)
-            context->Message_Block[context->Message_Block_Index++] = 0;
+    uint8_t i;
+    uint32_t a, b, c, d, e, t;
 
-        _picohash_sha1_process_message_block(context);
-    } else
-        context->Message_Block[context->Message_Block_Index++] = Pad_Byte;
-
-    while (context->Message_Block_Index < (PICOHASH_SHA1_BLOCK_LENGTH - 8))
-        context->Message_Block[context->Message_Block_Index++] = 0;
-
-    /*
-     * Store the message length as the last 8 octets
-     */
-    context->Message_Block[56] = (uint8_t)(context->Length_High >> 24);
-    context->Message_Block[57] = (uint8_t)(context->Length_High >> 16);
-    context->Message_Block[58] = (uint8_t)(context->Length_High >> 8);
-    context->Message_Block[59] = (uint8_t)(context->Length_High);
-    context->Message_Block[60] = (uint8_t)(context->Length_Low >> 24);
-    context->Message_Block[61] = (uint8_t)(context->Length_Low >> 16);
-    context->Message_Block[62] = (uint8_t)(context->Length_Low >> 8);
-    context->Message_Block[63] = (uint8_t)(context->Length_Low);
-
-    _picohash_sha1_process_message_block(context);
+    a = s->state[0];
+    b = s->state[1];
+    c = s->state[2];
+    d = s->state[3];
+    e = s->state[4];
+    for (i = 0; i < 80; i++) {
+        if (i >= 16) {
+            t = s->buffer[(i + 13) & 15] ^ s->buffer[(i + 8) & 15] ^ s->buffer[(i + 2) & 15] ^ s->buffer[i & 15];
+            s->buffer[i & 15] = _picohash_sha1_rol32(t, 1);
+        }
+        if (i < 20) {
+            t = (d ^ (b & (c ^ d))) + _PICOHASH_SHA1_K0;
+        } else if (i < 40) {
+            t = (b ^ c ^ d) + _PICOHASH_SHA1_K20;
+        } else if (i < 60) {
+            t = ((b & c) | (d & (b | c))) + _PICOHASH_SHA1_K40;
+        } else {
+            t = (b ^ c ^ d) + _PICOHASH_SHA1_K60;
+        }
+        t += _picohash_sha1_rol32(a, 5) + e + s->buffer[i & 15];
+        e = d;
+        d = c;
+        c = _picohash_sha1_rol32(b, 30);
+        b = a;
+        a = t;
+    }
+    s->state[0] += a;
+    s->state[1] += b;
+    s->state[2] += c;
+    s->state[3] += d;
+    s->state[4] += e;
 }
 
-static inline void _picohash_sha1_finalize(_picohash_sha1_ctx_t *context, uint8_t Pad_Byte)
+static inline void _picohash_sha1_add_uncounted(_picohash_sha1_ctx_t *s, uint8_t data)
 {
+    uint8_t *const b = (uint8_t *)s->buffer;
+#ifdef _PICOHASH_BIG_ENDIAN
+    b[s->bufferOffset] = data;
+#else
+    b[s->bufferOffset ^ 3] = data;
+#endif
+    s->bufferOffset++;
+    if (s->bufferOffset == PICOHASH_SHA1_BLOCK_LENGTH) {
+        _picohash_sha1_hash_block(s);
+        s->bufferOffset = 0;
+    }
+}
+
+inline void _picohash_sha1_init(_picohash_sha1_ctx_t *s)
+{
+    s->state[0] = 0x67452301;
+    s->state[1] = 0xefcdab89;
+    s->state[2] = 0x98badcfe;
+    s->state[3] = 0x10325476;
+    s->state[4] = 0xc3d2e1f0;
+    s->byteCount = 0;
+    s->bufferOffset = 0;
+}
+
+inline void _picohash_sha1_update(_picohash_sha1_ctx_t *s, const void *_data, size_t len)
+{
+    const uint8_t *data = _data;
+    for (; len != 0; --len) {
+        ++s->byteCount;
+        _picohash_sha1_add_uncounted(s, *data++);
+    }
+}
+
+inline void _picohash_sha1_final(_picohash_sha1_ctx_t *s, void *digest)
+{
+    // Pad with 0x80 followed by 0x00 until the end of the block
+    _picohash_sha1_add_uncounted(s, 0x80);
+    while (s->bufferOffset != 56)
+        _picohash_sha1_add_uncounted(s, 0x00);
+
+    // Append length in the last 8 bytes
+    _picohash_sha1_add_uncounted(s, s->byteCount >> 53); // Shifting to multiply by 8
+    _picohash_sha1_add_uncounted(s, s->byteCount >> 45); // as SHA-1 supports bitstreams as well as
+    _picohash_sha1_add_uncounted(s, s->byteCount >> 37); // byte.
+    _picohash_sha1_add_uncounted(s, s->byteCount >> 29);
+    _picohash_sha1_add_uncounted(s, s->byteCount >> 21);
+    _picohash_sha1_add_uncounted(s, s->byteCount >> 13);
+    _picohash_sha1_add_uncounted(s, s->byteCount >> 5);
+    _picohash_sha1_add_uncounted(s, s->byteCount << 3);
+
+#ifndef SHA_BIG_ENDIAN
+    // Swap byte order back
     int i;
-    _picohash_sha1_pad_message(context, Pad_Byte);
-    /* message may be sensitive, clear it out */
-    for (i = 0; i < PICOHASH_SHA1_BLOCK_LENGTH; ++i)
-        context->Message_Block[i] = 0;
-    context->Length_High = 0; /* and clear length */
-    context->Length_Low = 0;
-}
-
-inline void _picohash_sha1_init(_picohash_sha1_ctx_t *context)
-{
-    context->Length_High = context->Length_Low = 0;
-    context->Message_Block_Index = 0;
-
-    /* Initial Hash Values: FIPS 180-3 section 5.3.1 */
-    context->Intermediate_Hash[0] = 0x67452301;
-    context->Intermediate_Hash[1] = 0xEFCDAB89;
-    context->Intermediate_Hash[2] = 0x98BADCFE;
-    context->Intermediate_Hash[3] = 0x10325476;
-    context->Intermediate_Hash[4] = 0xC3D2E1F0;
-}
-
-inline void _picohash_sha1_update(_picohash_sha1_ctx_t *context, const void *_message_array, size_t length)
-{
-    const uint8_t *message_array = _message_array;
-    uint32_t addTemp;
-
-    while (length--) {
-        context->Message_Block[context->Message_Block_Index++] = *message_array;
-        addTemp = context->Length_Low;
-        if ((context->Length_Low += 8) < addTemp)
-            ++context->Length_High;
-        if (context->Message_Block_Index == PICOHASH_SHA1_BLOCK_LENGTH)
-            _picohash_sha1_process_message_block(context);
-
-        message_array++;
+    for (i = 0; i < 5; i++) {
+        s->state[i] = (((s->state[i]) << 24) & 0xff000000) | (((s->state[i]) << 8) & 0x00ff0000) |
+                      (((s->state[i]) >> 8) & 0x0000ff00) | (((s->state[i]) >> 24) & 0x000000ff);
     }
-}
+#endif
 
-inline void _picohash_sha1_final(_picohash_sha1_ctx_t *context, void *_Message_Digest)
-{
-    unsigned char *Message_Digest = _Message_Digest;
-    int i;
-
-    _picohash_sha1_finalize(context, 0x80);
-
-    for (i = 0; i < PICOHASH_SHA1_DIGEST_LENGTH; ++i)
-        Message_Digest[i] = (uint8_t)(context->Intermediate_Hash[i >> 2] >> (8 * (3 - (i & 0x03))));
+    memcpy(digest, s->state, sizeof(s->state));
 }
 
 inline void picohash_init_md5(picohash_ctx_t *ctx)
