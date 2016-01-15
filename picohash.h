@@ -101,6 +101,7 @@ typedef struct {
 
 static void picohash_init_md5(picohash_ctx_t *ctx);
 static void picohash_init_sha1(picohash_ctx_t *ctx);
+static void picohash_init_sha224(picohash_ctx_t *ctx);
 static void picohash_init_sha256(picohash_ctx_t *ctx);
 static void picohash_update(picohash_ctx_t *ctx, const void *input, size_t len);
 static void picohash_final(picohash_ctx_t *ctx, void *digest);
