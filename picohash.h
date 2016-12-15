@@ -6,7 +6,7 @@
  *
  * The SHA1 implementation is based on a public domain implementation written
  * by Wei Dai and other contributors for libcrypt, used also in liboauth.
- * 
+ *
  * The SHA224/SHA256 implementation is based on a public domain implementation
  * by Sam Hocevar <sam@hocevar.net> for LibTomCrypt.
  */
@@ -457,11 +457,12 @@ inline void _picohash_sha1_final(_picohash_sha1_ctx_t *s, void *digest)
     _picohash_sha1_add_uncounted(s, s->byteCount << 3);
 
 #ifndef SHA_BIG_ENDIAN
-    // Swap byte order back
-    int i;
-    for (i = 0; i < 5; i++) {
-        s->state[i] = (((s->state[i]) << 24) & 0xff000000) | (((s->state[i]) << 8) & 0x00ff0000) |
-                      (((s->state[i]) >> 8) & 0x0000ff00) | (((s->state[i]) >> 24) & 0x000000ff);
+    { // Swap byte order back
+        int i;
+        for (i = 0; i < 5; i++) {
+            s->state[i] = (((s->state[i]) << 24) & 0xff000000) | (((s->state[i]) << 8) & 0x00ff0000) |
+                          (((s->state[i]) >> 8) & 0x0000ff00) | (((s->state[i]) >> 24) & 0x000000ff);
+        }
     }
 #endif
 
