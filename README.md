@@ -15,7 +15,7 @@ char digest[PICOHASH_MD5_DIGEST_LENGTH];
 
 picohash_init_md5(&ctx);
 picohash_update(&ctx, "hello", 5);
-picohash_digest(&ctx, digest);
+picohash_final(&ctx, digest);
 ```
 
 Replace `md5` with `sha1`, `sha224`, `sha256` for your need.
@@ -29,7 +29,7 @@ char digest[PICOHASH_SHA1_DIGEST_LENGTH];
 
 picohash_init_hmac(&ctx, picohash_init_sha1, "my secret", strlen("my secret"));
 picohash_update(&ctx, "hello", 5);
-picohash_digest(&ctx, digest);
+picohash_final(&ctx, digest);
 ```
 
 Replace `md5` with `sha1`, `sha224`, `sha256` for your need.
