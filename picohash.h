@@ -26,7 +26,9 @@
 #define _PICOHASH_BIG_ENDIAN
 #endif
 #else               // ! defined __LITTLE_ENDIAN__
+#if __has_include("endian.h")
 #include <endian.h> // machine/endian.h
+#endif
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #define _PICOHASH_BIG_ENDIAN
 #endif
