@@ -26,7 +26,7 @@
 #define _PICOHASH_BIG_ENDIAN
 #endif
 #else               // ! defined __LITTLE_ENDIAN__
-#ifndef WIN32 // https://stackoverflow.com/questions/6449468/can-i-safely-assume-that-windows-installations-will-always-be-little-endian
+#ifndef _WIN32 // https://stackoverflow.com/questions/6449468/can-i-safely-assume-that-windows-installations-will-always-be-little-endian
 #include <endian.h> // machine/endian.h
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #define _PICOHASH_BIG_ENDIAN
